@@ -8,11 +8,13 @@
 
 /* Modes */
 #define MENUREQUEST                      0
-#define AZIMUTHSWEEP                     1
-#define ELEVATIONSWEEP                   2
-#define POSITIONTICKS                    3
-#define POSITIONDEGREES                  4
-#define READMRMONLY                      5
+#define SPHERE                           1
+#define AZIMUTHSWEEP                     2
+#define ELEVATIONSWEEP                   3
+#define POSITIONTICKS                    4
+#define POSITIONDEGREES                  5
+#define READMRMONLY                      6
+#define CONFIGUREMRM                     7
 
 /* Request Variables */
 #define MODE                             0
@@ -21,6 +23,9 @@
 #define ANGLETICKS                       3          //need these to align
 #define ANGLEDEGREES                     4          //with the #define in modes
 #define ITERATIONS                       5
+#define MRMOUTPUTRATE                    6
+#define MRMSHOTMODE                      7
+#define MRMRESOLUTION                    8
 
 /* MRM */
 #define MRMADDRESS                       0x1E       //Slave Address
@@ -58,6 +63,8 @@ void displayMenuOptions()
   Serial.println("3) Move to specific position (in ticks). No MRM Collection Done.");         // Con
   Serial.println("4) Move to specific position (in degrees). No MRM Collection Done.");       // Dis
   Serial.println("5) Read MRM Values.");                               // Dis; Just read relative to position it's at now
+  Serial.println("6) Sphere Sweep.");
+  Serial.println("7) Configure MRM");
   Serial.println("###########################");
 }
 
@@ -70,15 +77,15 @@ void displayTableHeaders()
 
 void displayData()
 { 
-  azServoTicks = ax12GetRegister(AZ_SERVO,AX_PRESENT_POSITION_L,2);
-  elServoTicks = ax12GetRegister(EL_SERVO,AX_PRESENT_POSITION_L,2);
+  double azServoTicks = ax12GetRegister(AZ_SERVO,AX_PRESENT_POSITION_L,2);
+  double elServoTicks = ax12GetRegister(EL_SERVO,AX_PRESENT_POSITION_L,2);
   Serial.print(azServoTicks);
   Serial.print("\t");
   Serial.print(elServoTicks);
   Serial.print("\t");
   Serial.print(azServoTicks*.293);
   Serial.print("\t");
-  Serial.print(elServoTicks*.293));
+  Serial.print(elServoTicks*.293);
   Serial.print("\t");
   Serial.print(xRegister);
   Serial.print("\t");
@@ -130,7 +137,7 @@ boolean requestFromUser(int variableCode, int * neededVariable )
 {
   boolean inputRecieved     = false;
   boolean invalidInputSent  = false;
-  int     valueNeeded;     
+  double     valueNeeded;    //this was an int before 
   while(!inputRecieved)
   {
     inputRecieved = checkForInput();
@@ -145,7 +152,7 @@ boolean requestFromUser(int variableCode, int * neededVariable )
         valueNeeded = atoi(buffer);
         if(variableCode == MODE)
         {
-          if(!(valueNeeded >= 1 && valueNeeded <=5))
+          if(!(valueNeeded >= 1 && valueNeeded <=7))
           {
             Serial.println("\nInvalid option. Please enter another or <?> for menu.");
             invalidInputSent = true;
@@ -191,6 +198,30 @@ boolean requestFromUser(int variableCode, int * neededVariable )
             invalidInputSent = true; 
           }
         }
+        else if(variableCode == MRMOUTPUTRATE)
+        {
+          if(!(valueNeeded == 1 || valueNeeded == 2 || valueNeeded == 4 || valueNeeded == 8))
+          {
+            Serial.println("\nInvalid output rate. Please enter another or <?> for menu.\n");
+            invalidInputSent = true;
+          }
+        }
+        else if(variableCode == MRMSHOTMODE)
+        {
+          if(!(valueNeeded == 1 || valueNeeded == 2))
+          {
+            Serial.println("\nInvalid shot mode selection. Please enter another or <?> for menu.\n");
+            invalidInputSent = true;
+          }
+        }
+        else if(variableCode == MRMRESOLUTION)
+        {
+          if(!(valueNeeded == 1370 || valueNeeded == 1090 || valueNeeded == 820 || valueNeeded == 660 || valueNeeded == 440 || valueNeeded == 390 || valueNeeded == 330 || valueNeeded == 230 || valueNeeded == 4.35 || valueNeeded == 3.03 || valueNeeded == 2.56 || valueNeeded == 2.27 || valueNeeded == 1.52 || valueNeeded == 1.22 || valueNeeded == .92 || valueNeeded == .73))
+          {
+            Serial.println("\nInvalid gain/resolution requested. Please enter another or <?> for menu.\n");
+            invalidInputSent = true;
+          }
+        }
         if(invalidInputSent)
         {
           buffer[0] = '\0';                     //reset buffer just in case
@@ -207,7 +238,7 @@ boolean requestFromUser(int variableCode, int * neededVariable )
 
 
 ///////////////////////////////
-// Servo Conversion Functions
+// Servo Functions
 ///////////////////////////////
 
 int angleToPos(double anglePosition)
@@ -228,6 +259,22 @@ int angleToPos(double anglePosition)
 ///////////////////////////////
 // MRM Functions
 ///////////////////////////////
+//boolean configureMRM()
+//{
+//  int     outputRate             = 0x00;
+//  int *   outputRatePtr          = &outputRate;
+//  boolean continueConfiguration  = true;
+//
+//
+//  Serial.println("\nMRMConfiguration Mode.\n");
+//
+//  Serial.println("Output Rate and Measurement Configuration.\n Enter number of samples averaged per measurement output s in form <s>. s E {1,2,4,8}.\n");
+//  continueConfiguration = requestFromUser(MRMOUTPUTRATE, outputRatePtr);
+//  if(!continueConfiguration)
+//  {
+//    return false;
+//  }
+//}
 void configureMRM()
 {
   /* Select MRM Mode (see top of code for explanation) */
@@ -288,26 +335,24 @@ void mrmCollection()
 ///////////////////////////////
 
 /* Handles AZIMUTHSWEEP AND ELEVATIONSWEEP */
-boolean azelSweep(boolean azSweepSelected, int angleInterval, int delayTime, double nonsweepservoPosition)
+boolean sweeps(int sweepMode, int angleInterval, int delayTime, double nonsweepservoPosition)
 {
   /* Print Headers */
   displayTableHeaders();
 
-  /* Configure Servo Settings */
-  int rpm            = 7;
-  int servoSpeed     = round(rpm/.111);           // tick E [0-1023], gives servo speed; .111 rpm/tick
+  /* Define Upper and Lower Angle Limits */
   int positive150Deg = angleToPos(150.0); 
   int negative150Deg = angleToPos(-150.0);  
 
   /* Move Servos to Start Positions */
   ax12SetRegister2(AZ_SERVO, AX_GOAL_SPEED_L, 500); //format: servo, register, tick value
   ax12SetRegister2(EL_SERVO, AX_GOAL_SPEED_L, 500); //tick value has different meaning depending on register
-  if(azSweepSelected)
+  if(sweepMode == AZIMUTHSWEEP || sweepMode == SPHERE)
   {
     SetPosition(AZ_SERVO, positive150Deg);
     SetPosition(EL_SERVO, angleToPos(nonsweepservoPosition));
   }
-  else
+  else if(sweepMode == ELEVATIONSWEEP)
   {
     SetPosition(EL_SERVO, positive150Deg);
     SetPosition(AZ_SERVO, angleToPos(nonsweepservoPosition));
@@ -315,17 +360,19 @@ boolean azelSweep(boolean azSweepSelected, int angleInterval, int delayTime, dou
   delay(1000);
 
   /* Set Servo Speed */
+  int rpm            = 7;
+  int servoSpeed     = round(rpm/.111);           // tick E [0-1023], gives servo speed; .111 rpm/tick
   ax12SetRegister2(AZ_SERVO, AX_GOAL_SPEED_L, servoSpeed);
   ax12SetRegister2(EL_SERVO, AX_GOAL_SPEED_L, servoSpeed);
 
   /* Begin Sweep(s) */
   unsigned long startMRMTime;  
-  int           convertedInterval= angleInterval / .293;
-  int           currentPosition  = ax12GetRegister(AZ_SERVO, AX_PRESENT_POSITION_L, 2); 
-  int           destination      = currentPosition; //or else it would skip first measuremnt
-  boolean       inputReceived    = false;
-  boolean       completedSweep   = false;
-  boolean       goingForward     = true;
+  int           convertedInterval = angleInterval / .293;
+  int           currentPosition   = ax12GetRegister(AZ_SERVO, AX_PRESENT_POSITION_L, 2); 
+  int           destination       = currentPosition; //or else it would skip first measuremnt
+  boolean       inputReceived     = false;
+  boolean       completedSweep    = false;
+  boolean       goingForward      = true;
 
   while( !completedSweep )
   {
@@ -338,15 +385,15 @@ boolean azelSweep(boolean azSweepSelected, int angleInterval, int delayTime, dou
     }
 
     /* Sweep selected servo */
-    if(azSweepSelected)
+    if(sweepMode == AZIMUTHSWEEP || sweepMode == SPHERE)
     {
       SetPosition(AZ_SERVO, destination);
     }
-    else
+    else if(sweepMode == ELEVATIONSWEEP)
     {
       SetPosition(EL_SERVO, destination);
     }
-    
+
     /* Wait for Until Destination Reached */
     delay(1000);
 
@@ -368,7 +415,6 @@ boolean azelSweep(boolean azSweepSelected, int angleInterval, int delayTime, dou
     }
 
     /* Change the Destination of Sweeping Servo */
-
     if(goingForward)
     {
       destination += convertedInterval;
@@ -464,17 +510,28 @@ void loop()
   if(!continueLoop)
     return;
 
+  if(mode == SPHERE)
+  {
+    Serial.println("\nYou chose 1) Sphere.\n");
+    for(double i = -150.0; i <= 150.0; i++)
+    {
+      continueLoop = sweeps(SPHERE, 1, 2, i);
+      if(!continueLoop)
+        break;
+    }
+  }
+
   /* Execute desired mode */
-  if(mode == AZIMUTHSWEEP || mode == ELEVATIONSWEEP)           //implement 
+  else if(mode == AZIMUTHSWEEP || mode == ELEVATIONSWEEP)           //implement 
   {
     if(mode == AZIMUTHSWEEP)
     {
-      Serial.println("\nYou chose 1) Azimuth Sweep.\n");
+      Serial.println("\nYou chose 2) Azimuth Sweep.\n");
       Serial.println("Enter the desired elevation angle x in degrees with form <x>.\nValid Range: x E [-150, 150].");
     }
     else
     {
-      Serial.println("\nYou chose 2) Elevation Sweep.\n");
+      Serial.println("\nYou chose 3) Elevation Sweep.\n");
       Serial.println("Enter the desired azimuth x in degrees with form <x>.\nValid Range: x E [-150, 150].");
     }
 
@@ -525,7 +582,7 @@ void loop()
     Serial.println(numIterations);
     Serial.println("\n");
 
-    /* Execute azelSweep */
+    /* Execute sweeps */
     configureMRM();
     modeStartTime = millis(); 
     int counter = 0;
@@ -533,11 +590,11 @@ void loop()
     {
       if(mode==AZIMUTHSWEEP)
       {
-        continueLoop = azelSweep(true, angleInterval, delayTime, inputAngle);
+        continueLoop = sweeps(AZIMUTHSWEEP, angleInterval, delayTime, inputAngle);
       }
       else
       {
-        continueLoop = azelSweep(false, angleInterval, delayTime, inputAngle);
+        continueLoop = sweeps(ELEVATIONSWEEP, angleInterval, delayTime, inputAngle);
       }
       counter++;
     }
@@ -547,12 +604,12 @@ void loop()
     /* Prompt User for Valid Azimuth Input */
     if(mode == POSITIONTICKS)
     {
-      Serial.println("\nYou chose 3) Move to specific position. (in ticks)\n");
+      Serial.println("\nYou chose 4) Move to specific position. (in ticks)\n");
       Serial.println("Enter desired azimuth angle in x in ticks with form <x>. \nValid Range: x E [0,1023].\n");
     }
     else
     {
-      Serial.println("\nYou chose 4) Move to specific position (in degrees).\n");
+      Serial.println("\nYou chose 5) Move to specific position (in degrees).\n");
       Serial.println("Enter desired azimuth angle in x in degrees with form <x>. \nValid Range: x E [-150,150].\n");
     }
     /* For Input */
@@ -597,9 +654,66 @@ void loop()
       positionServos(false, azimuthAngle, elevationAngle);
     }
   }
-  
+
   else if(mode == READMRMONLY)
   {
+    Serial.println("\nYou chose 6) Read MRM Only.\n");
     readMRMOnly();
   }
+  
+//  else if(mode == CONFIGUREMRM)
+//  {
+//    Serial.println("\nYou chose 7) Configure MRM. \n");
+//    
+//    int     outputRate, resolution, shotMode;
+//    int     *outputRatePtr        = &outputRate;
+//    int     *resolutionPtr        = &resolution;
+//    int     *shotModePtr          = &shotMode;
+//    boolean continueConfiguration = true;
+//    
+//    Serial.println("Enter shot mode s in form <s>. s E {1,2} where 1 is single-shot, 2 is multi-shot.\n");
+//    continueConfiguration = requestFromUser(MRMSHOTMODE, shotModePtr); 
+//    if(!continueConfiguration)
+//    {
+//      return;
+//    }
+//    Serial.println("Enter number of samples averaged per output o in form <o>. o E {1,2,4,8}.\n");
+//    continueConfiguration = requestFromUser(MRMOUTPUTRATE, outputRatePtr); 
+//    if(!continueConfiguration)
+//    {
+//      return;
+//    }
+//    Serial.println("Enter gain in form <g>. g E {1370,1090,820,660,440,390,330,230} in LSb/Gauss.\nThe associated digital resolution is {.73,.92,1.22,1.52,2.27,2.56,3.03,4.35} in mG/LSb and may be entered as well.\n");
+//    continueConfiguration = requestFromUser(MRMRESOLUTION, resolutionPtr); 
+//    if(!continueConfiguration)
+//    {
+//      return;
+//    }
+//    mrmConfiguration(shotMode, outputRate, resolution);
+//  }
+
 }
+
+
+//void configureMRM()
+//{
+//  /* Select MRM Mode (see top of code for explanation) */
+//  Wire.beginTransmission(MRMADDRESS);
+//  Wire.write(MODEREGISTER);
+//  //Wire.write(0x01);                   //single-shot mode
+//  Wire.write(CONTINUOUSMODE);                     //continuous-shot mode
+//  currentMode = CONTINUOUSMODE;
+//  Wire.endTransmission();
+//
+//  /* Select MRM Output Data to Registers Rate */
+//  Wire.beginTransmission(MRMADDRESS);
+//  Wire.write(0x00);
+//  Wire.write(0x10);
+//  Wire.endTransmission();
+//
+//  /*Resolution Select*/
+//  Wire.beginTransmission(MRMADDRESS);
+//  Wire.write(0x01);
+//  Wire.write(0x40);
+//  Wire.endTransmission();
+//}
